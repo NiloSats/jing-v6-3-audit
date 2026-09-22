@@ -123,6 +123,15 @@ Alice exits the tail                 -> epoch=1 total-shares=0 unfilled-index=1e
 Bob deposits 1,000 STX now           -> shares 1,000,000,000 at a fresh index
 ```
 
+**The patch against your own invariants** (`npx rv . jing-buy-stx-market-spread invariant --runs=100`, floor corrected per finding 2):
+
+| build | runs | invariant evaluations | failures |
+|---|---|---|---|
+| unpatched (baseline) | 100 | 100 | 0 |
+| with MINT_FLOOR patch | 100 | 100 | 0 |
+
+All 15 invariants still hold, including `invariant-unfilled-index-bounds`, `invariant-total-shares-eq-sum` and `invariant-pooled-le-actual`. Worth noting for finding 2: **neither run ever falsified anything**, i.e. the random driver does not reach the tail state where this defect lives, which matches your own negative-control note in `README-audit-bounty-v6-seats.md`. The reproduction scripts here get there deterministically.
+
 Trade-off, stated plainly: while `1e6 ≤ index < 1e9` the rung takes no deposits until the tail sells or its members leave. A member who never leaves keeps it in that state (a liveness cost, not a loss; the dispatcher's allocation to that rung would revert with u7012). The complete alternative is per-epoch residual accounting. At the close, snapshot the final unfilled index next to `epoch-final-proceeds`. Move the residual to `held-sats` under a reserved counter excluded from the new epoch's `actual`. Let old-epoch rows withdraw `shares * final-unfilled / SCALE` from it. That's a bigger change, and I haven't tested it.
 
 ---
