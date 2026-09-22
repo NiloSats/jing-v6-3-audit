@@ -10,4 +10,4 @@
    (Node ports of `tests/rv/build.sh` sections 2d/2f; the only additions are the v6-3 and ladder-v1 principals.)
 3. Set the real price in the two builds (finding 2): replace `u30165912518853695` with `u30165912518853` in the `floor` / `cap` data-var of `tests/rv/.build/jing-{buy,sell}-stx-market-spread.clar`. On Windows, make sure the .clar files have LF line endings.
 4. `node repro_index_close.mjs`, `node repro_index_close_sell.mjs` from the repo root.
-5. `fix_check.mjs` expects the patch in REPORT.md applied to the buy build.
+5. `fix_check.mjs` / `fix_check_sell.mjs` expect the patch in REPORT.md applied to the buy / sell build.
