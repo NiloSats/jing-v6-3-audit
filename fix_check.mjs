@@ -1,0 +1,15 @@
+import { initSimnet } from "@stacks/clarinet-sdk";
+import { Cl, cvToValue, cvToString } from "@stacks/transactions";
+const simnet = await initSimnet("Clarinet-jing-buy-stx-market-spread.toml");
+const A = simnet.getAccounts(); const D = A.get("deployer"); const w = [...A.values()];
+const [alice, bob, taker] = [w[1], w[2], w[3]];
+const R = "jing-buy-stx-market-spread", E = Cl.buffer(new Uint8Array(0));
+const call = (fn, args, who) => cvToString(simnet.callPublicFn(R, fn, args, who).result);
+const S = () => { const s = cvToValue(simnet.callReadOnlyFn(R, "get-state", [], D).result); const o = {}; for (const k of ["epoch","total-shares","unfilled-index","held-sats","resting"]) o[k] = BigInt(s[k].value); return o; };
+const fmt = (o) => Object.entries(o).map(([k, v]) => `${k}=${v}`).join(" ");
+const take = (ustx) => call("rv-take", [Cl.uint(ustx), Cl.uint(15999)], taker);
+const sellTo = (target) => { let step = 50000000n; for (let i = 0; i < 400; i++) { const r = S().resting; if (r <= target * 13n / 10n) return; const gap = r - target; const want = gap < step ? gap : step; const res = take(want * 3200n); if (!res.startsWith("(ok")) { step = step / 2n; if (step < 1n) return; } } };
+console.log("Alice deposits 1e8:", call("deposit", [Cl.uint(100000000), E], alice)); sellTo(400n); console.log(fmt(S()));
+console.log("Bob deposits 1e7 into the tail:", call("deposit", [Cl.uint(10000000), E], bob), " <- refused (u7012), Bob keeps his sats");
+console.log("Alice exits the tail:", call("withdraw", [Cl.uint(100000000)], alice)); console.log(fmt(S()));
+console.log("Bob deposits 1e7 now:", call("deposit", [Cl.uint(10000000), E], bob)); console.log(fmt(S()));
