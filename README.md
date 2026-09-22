@@ -89,7 +89,7 @@ Bob loses 474.9 STX, 47.5% of his deposit.
 - The precondition is a pool whose index has fallen to a few multiples of 1e6 while its epoch is still open, i.e. at least `SOLD_OUT_DUST` still resting. The contract's own comment on `SOLD_OUT_INDEX` says the index "gets there on its own" through sell-down/top-up cycles. It's visible on chain through `get-state`, so a depositor can't see the danger but a taker can: fill the tail, wait for a top-up, fill past the threshold, then deposit `MIN_DEPOSIT` as the first member of the new epoch.
 - Through `jing-ladder-dispatch` nothing changes, since the dispatcher calls the same `deposit`.
 
-### Fix (tested)
+### Fix (tested on both rungs)
 
 Don't mint into the tail of an epoch, and restart the index when the last member leaves:
 
@@ -112,6 +112,15 @@ Alice deposits 1e8                   -> sold down to unfilled-index=4,070,000
 Bob deposits 1e7 into the tail       -> (err u7012), Bob keeps his sats
 Alice exits the tail                 -> epoch=1 total-shares=0 unfilled-index=1e12
 Bob deposits 1e7 now                 -> shares 10,000,000 at a fresh index
+```
+
+**Sell side, same patch** (`fix_check_sell.mjs`, added 2026-09-22 10:40 UTC), real output:
+
+```
+Alice deposits 100,000 STX           -> sold down to unfilled-index=1,747,220
+Bob deposits 1,000 STX into the tail -> (err u7012), Bob keeps his STX
+Alice exits the tail                 -> epoch=1 total-shares=0 unfilled-index=1e12
+Bob deposits 1,000 STX now           -> shares 1,000,000,000 at a fresh index
 ```
 
 Trade-off, stated plainly: while `1e6 ≤ index < 1e9` the rung takes no deposits until the tail sells or its members leave. A member who never leaves keeps it in that state (a liveness cost, not a loss; the dispatcher's allocation to that rung would revert with u7012). The complete alternative is per-epoch residual accounting. At the close, snapshot the final unfilled index next to `epoch-final-proceeds`. Move the residual to `held-sats` under a reserved counter excluded from the new epoch's `actual`. Let old-epoch rows withdraw `shares * final-unfilled / SCALE` from it. That's a bigger change, and I haven't tested it.
