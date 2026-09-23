@@ -260,7 +260,21 @@ node nilo/build-inv.mjs jing-buy-stx-market-spread --con-arreglo   # with Fix A
 npx rv . jing-buy-stx-market-spread invariant --runs=100 --seed=424242
 ```
 
-Scope note: run on the buy-side rung. The sell-side rung shares the block and I have not run it there.
+### Sell side: I ran it, and it does not reproduce. Reported as a negative, not left as a gap
+
+The previous version of this section said the sell-side rung shares the block and that I had not run it there. I have now run it, and the honest answer is that the wrapper does not work on that side.
+
+`envoltorio_cierre_sell.clar` is the same idea in that side's units (the rung rests micro-STX, the taker pays sats at `cap-cents / 1e8`, and it calls `swap` directly because that side's `rv-take` folds its argument into `(+ u200 (mod amount u200000))`, which cannot express "take the gap"). It compiles and executes. Every call is refused. Over one 100-run seed:
+
+    19x u1017 ERR_PARTIAL_FILL      13x u1018 ERR_HAS_RESTING_POSITION      8x u1010 ERR_QUEUE_FULL
+
+`ERR_PARTIAL_FILL` is the one that matters and it is structural, not a sizing mistake of mine. The market requires the remainder of a swap to fall below its own minimum deposit (`markets-sbtc-stx-jing-v6-3-formatted.clar` lines 2863 and 2930), so "take exactly the gap" is not a thing a taker can ask for. Clamping the take to what the rung has resting at the market did not fix it either: the swap walks the whole book, so it can fill from other makers first, and the age rebate shrinks the effective amount below what was requested.
+
+For context, measured rather than guessed — taker calls that actually fill, same seed, 100 runs, stock wrappers with the floor corrected:
+
+    sell rung  5 / 52      buy rung  12 / 52
+
+So the sell side is not starved of fills, it is just harder to steer, and my wrapper does not steer it. **The result in this section is a buy-side result. I am not claiming the sell side reproduces, and I would not want it counted as if it did.** The finding itself still applies to both rungs by inspection of the shared close, as section 1 says; what is missing is the same mechanical demonstration on that side.
 
 ---
 
