@@ -89,7 +89,7 @@ Bob loses 474.9 STX, 47.5% of his deposit.
 - The precondition is a pool whose index has fallen to a few multiples of 1e6 while its epoch is still open, i.e. at least `SOLD_OUT_DUST` still resting. The contract's own comment on `SOLD_OUT_INDEX` says the index "gets there on its own" through sell-down/top-up cycles. It's visible on chain through `get-state`, so a depositor can't see the danger but a taker can: fill the tail, wait for a top-up, fill past the threshold, then deposit `MIN_DEPOSIT` as the first member of the new epoch.
 - Through `jing-ladder-dispatch` nothing changes, since the dispatcher calls the same `deposit`.
 
-### Fix (tested on both rungs)
+### Fix A: don't mint into the tail (tested on both rungs)
 
 Don't mint into the tail of an epoch, and restart the index when the last member leaves:
 
@@ -131,6 +131,50 @@ Bob deposits 1,000 STX now           -> shares 1,000,000,000 at a fresh index
 | with MINT_FLOOR patch | 100 | 100 | 0 |
 
 All 15 invariants still hold, including `invariant-unfilled-index-bounds`, `invariant-total-shares-eq-sum` and `invariant-pooled-le-actual`. Worth noting for finding 2: **neither run ever falsified anything**, i.e. the random driver does not reach the tail state where this defect lives, which matches your own negative-control note in `README-audit-bounty-v6-seats.md`. The reproduction scripts here get there deterministically.
+
+### Fix B: pay the closed epoch back instead of capping the loss (implemented and tested)
+
+Fix A bounds the damage. This one removes it: at an index-floor close, the residual stops being a gift to the next epoch and becomes a debt to the members who funded it.
+
+```clarity
+(define-map epoch-final-unfilled uint uint)        ;; the index at the moment the epoch closed
+(define-data-var reserved-sats uint u0)            ;; sats owed to closed epochs
+
+;; sync: the live epoch's `actual` excludes what is owed to closed epochs
+(bruto (+ (market-size) local))
+(actual (if (> bruto (var-get reserved-sats)) (- bruto (var-get reserved-sats)) u0))
+
+;; at the close, next to epoch-final-proceeds:
+(map-set epoch-final-unfilled current-epoch new-index)
+(var-set reserved-sats (+ (var-get reserved-sats) actual))
+
+;; settle-proceeds, for an old-epoch row: pay back their unsold share too
+(and (not current)
+  (let ((mine (/ (* (get shares pos) (final-unfilled (get epoch pos))) SCALE)))
+    (and (> mine u0)
+      (begin (try! (pull-to-held-sats mine))
+             (try! (as-contract? ((with-ft SBTC SBTC_NAME mine))
+               (try! (contract-call? SBTC transfer mine current-contract who none))))
+             (var-set held-sats (- (var-get held-sats) mine))
+             (var-set reserved-sats (if (> (var-get reserved-sats) mine) (- (var-get reserved-sats) mine) u0))
+             true))))
+```
+
+Run on the same scenario (`fix_completo_check.mjs`, patched rung in `fix_completo_rung.clar`):
+
+```
+Bob deposits 10,000,000 sats at index 4,070,000
+a taker buys ~80%              -> epoch closes, 2,032,020 sats still resting
+Bob: get-position sbtc = 0     (unchanged: his row is old-epoch)
+Bob calls claim                -> sBTC returned to Bob: 2,031,936 sats
+final state                    -> resting 0, held 84 (rounding dust)
+```
+
+**99.996% of the orphaned amount goes back to its owner**, against 0% today. The 84 sats left are floor-division dust, the same rounding the contract already accepts elsewhere.
+
+Against the project's own invariants, `npx rv . jing-buy-stx-market-spread invariant --runs=100`: **100 evaluations of all 15 invariants, 0 falsified**, same as the unpatched baseline. Notably `invariant-pooled-le-actual` and `invariant-members-unsold-le-pooled` still hold with the reserve subtracted, which is where a bookkeeping error would have shown up first.
+
+Which fix to take is the maintainer's call: A is three lines and bounds the loss to 0.1%; B is ~12 lines and removes it. They compose — A also stops the share inflation that makes the close fire in the first place.
 
 Trade-off, stated plainly: while `1e6 ≤ index < 1e9` the rung takes no deposits until the tail sells or its members leave. A member who never leaves keeps it in that state (a liveness cost, not a loss; the dispatcher's allocation to that rung would revert with u7012). The complete alternative is per-epoch residual accounting. At the close, snapshot the final unfilled index next to `epoch-final-proceeds`. Move the residual to `held-sats` under a reserved counter excluded from the new epoch's `actual`. Let old-epoch rows withdraw `shares * final-unfilled / SCALE` from it. That's a bigger change, and I haven't tested it.
 
