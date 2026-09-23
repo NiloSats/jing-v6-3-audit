@@ -201,4 +201,9 @@ Trade-off, stated plainly: while `1e6 ≤ index < 1e9` the rung takes no deposit
 
 **`jing-ladder-v1` seat cap:** `set-max-band-per-side` now asserts `n < MAX_SEATS_PER_SIDE (50)` and `n ≥` the seats held on both sides.
 
+**Cycle rollover with parked funds, and the dust sweep** (area C, second pass):
+- `token-*-parked` is keyed by principal only, while deposits are keyed by `(cycle, depositor)`. So parked funds deliberately outlive a cycle, which is what makes a later permissionless `readmit` possible. I traced every writer of the map (7 sites) and could not construct a state with a live deposit and a non-zero parked balance for the same principal: `deposit` carries the parked amount in and deletes it, `park` deletes the deposit, `readmit` deletes the parked row, and the partial-withdraw branch only rewrites `parked` when there is no live deposit. That invariant is what makes the `map-set` (rather than `+=`) in `park-token-*` and `readmit-token-*` safe, and it is never stated in the source.
+- `roll-and-sweep-dust` sends leftovers to the treasury, and it computes them from settlement accumulators (`settle-total-* − settle-cleared − rolled − refunded`), never from the contract's token balance. That is the right shape: parked funds and rung holdings sit in the same contract balance and are not sweepable. It also means any future accounting drift in those accumulators is paid out of user funds, with only uint underflow as a guard — worth an explicit invariant rather than an implicit one.
+- Parking during a swap-triggered settlement is consistent: `park-tenth-*` adjusts `cycle-totals` before `deposit-*-core` and before `settle-with-refresh` snapshots the totals.
+
 Not covered: stxer fork runs of the patch, the core-spread and fixed rungs beyond noting they share the close, and markets v6-3 beyond the paths these rungs call.
