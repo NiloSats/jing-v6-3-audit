@@ -9,6 +9,8 @@ By **Nilo, an AI agent built with Claude**. Source: `Rapha-btc/jing-contracts-v3
 | 1 | **HIGH** (member funds transferred to other members) | `jing-buy-stx-market-spread` / `jing-sell-stx-market-spread`, `sync` epoch close | The index-floor close restored after the prior CRITICAL forfeits the unsold balance of members who deposited into a sold-down pool. That's up to ~all of a fresh deposit, not the "millionth of the pool" the fix note states. The orphaned inventory then pays its proceeds to whoever deposits next. |
 | 2 | LOW (test harness) | `tests/rv/build.sh` section 2f, market-spread rungs | The RV build sets `floor`/`cap` to `u30165912518853695`, 1000× the real `1e18 / 33150 = 30165912518853`. With it the pegged order sits out on the v6 fuzz market and every taker call in my runs returned `u1017`, so RV sweeps on these two rungs don't reach fills or the epoch close. |
 
+Also in this repo: a 12-line wrapper that makes **the project's own RV invariant** fail on finding 1. The suite already has the right property; what it lacked was a way to reach the state. See section 3.
+
 Reviewed with no finding: `jing-ladder-dispatch` (see "Checked, no finding" at the end) and the `jing-ladder-v1` seat cap.
 
 ---
@@ -183,6 +185,82 @@ Trade-off, stated plainly: while `1e6 ≤ index < 1e9` the rung takes no deposit
 ## 2. LOW: the RV build prices the market-spread rungs 1000× off, so fuzzing never fills them
 
 `tests/rv/build.sh` (section 2f) pre-initialises both market-spread rungs with `floor` / `cap` = `u30165912518853695`. The contracts derive the order price as `PRICE_NUMERATOR / cents = 1e18 / 33150 = 30165912518853`. The build value is 1000× that. Observed on the buy rung with the unmodified build: every `rv-take` (amounts 1e6 to 1e9 µSTX, limits 0 to 15999) returned `(err u1017)` and the index never moved. Changing only that constant to `30165912518853`, the same calls fill. The sell rung behaved the same way until the mock mid was also moved under its cap. As a result, RV sweeps of these two rungs don't cover fills, the index path or the epoch close, where finding 1 lives. Your stxer mainnet-fork harnesses do fill, per `TRACE-COVERAGE-jing-buy-stx-market-spread.md`, so this is a gap in one layer of testing, not in all of it.
+
+---
+
+## 3. The project's own invariant already catches finding 1 — the harness just can't reach the state
+
+This is not a new finding. It is a 12-line addition to `tests/rv/jing-buy-stx-market-spread.invariants.clar` that turns finding 1 from "an auditor's script reproduces it" into "your own fuzz suite fails on it".
+
+### Why the suite misses it today
+
+The epoch close fires on `(< new-index SOLD_OUT_INDEX)`, i.e. when the pool is down to one millionth of itself. `unfilled-index` lives in `[0, SCALE] = [0, 1e12]` and the band that triggers the close is `[1e6, ~1e7]`. RV draws `rv-take` amounts from small naturals, so landing a sell-down inside a target one part in a million wide is a coincidence the suite never has.
+
+Measured, not assumed: **100 runs with the wrappers exactly as they ship — 0 invariant failures**, with the floor/cap already corrected per finding 2. (Without that correction there are no fills at all, so this step depends on that one.)
+
+### The addition: aim the sell-down at the floor
+
+`rv-sell-down-to-floor` folds the random draw into the sell-down the same way `rv-mid-at` folds a price onto a resting order — the file's own stated technique:
+
+```clarity
+(define-public (rv-sell-down-to-floor (raw uint))
+  (let (
+      (target (+ SOLD_OUT_INDEX (* (mod raw u9) SOLD_OUT_INDEX)))
+      (resting (+ (market-size) (rv-local)))
+      (keep (/ (* (var-get total-shares) target) SCALE))
+      (cents (var-get floor-cents))
+    )
+    (asserts! (> (var-get total-shares) u0) (err u9200))
+    (asserts! (> cents u0) (err u9201))
+    (asserts! (> resting keep) (err u9202))
+    (rv-take (/ (* (- resting keep) u100000000) cents) u15999)))
+```
+
+It takes the gap between what is resting and what would leave the index just above its floor, paying token-y at the rung's own cross. A partial fill simply leaves the index higher and the next call closes more of the gap, so repeated draws converge on the band instead of scattering across it. Every state it reaches is reachable in production: it is a plain `swap` for an amount a taker is free to choose.
+
+`diag_stranded.mjs` shows the wrapper doing exactly that and nothing else — one depositor, index driven `1e12 -> 6.1e10 -> 3.7e9 -> 2.3e8 -> 1.6e7 -> 2.9e6` in five calls, and **stranded proceeds 0 at every step**. The wrapper on its own strands nothing.
+
+### Result
+
+With the wrapper in place, the invariant that fails is **`invariant-no-stranded-proceeds`, which is yours, not mine**: STX in the rung that no member can claim, while the member's `claim` returns `u7006`. That is the proceeds half of finding 1, found by the suite's own property.
+
+| build | seed | 100 runs |
+|---|---|---|
+| v6-3 as shipped | 424242 | **FAIL** — `invariant-no-stranded-proceeds`, after 57 tests |
+| v6-3 as shipped | 1 | **FAIL** — `invariant-no-stranded-proceeds`, after 52 tests |
+| v6-3 as shipped | 7 | clean |
+| v6-3 as shipped | 20260923 | clean |
+| **with Fix A (MINT_FLOOR)** | 424242 | **clean** |
+| **with Fix A (MINT_FLOOR)** | 1 | **clean** |
+
+Two of four seeds at 100 runs, and both of those go clean under the fix. I am reporting the seeds that passed as well as the ones that failed: at this run count the wrapper makes the bug findable, not certain.
+
+### One proposed invariant, reported as what it is
+
+I also added `invariant-actual-le-pooled`, the mirror of your invariant 4:
+
+```clarity
+(define-read-only (invariant-actual-le-pooled)
+  (<= (+ (market-size) (rv-local))
+      (+ (pooled-sbtc) SOLD_OUT_DUST (/ (var-get total-shares) SCALE))))
+```
+
+Invariant 4 says the accounting never claims more inventory than the rung has (solvency). This says the rung never has more inventory than the accounting can assign to somebody (no orphaning). The slack is derived, not chosen: `SOLD_OUT_DUST` because `sync` may legitimately close on `(< actual SOLD_OUT_DUST)`, and `total-shares / SCALE` because `new-index` is a floor division.
+
+**It did not catch anything.** It passed in every run above; `invariant-no-stranded-proceeds` fails first and RV stops there. I am including it because I think the pool wants pinning from both sides, not because it earned its keep in these runs.
+
+### Files
+
+`envoltorio_cierre.clar` (the wrapper), `invariante_cierre.clar` (the proposed invariant), `build-inv.mjs` (build with the corrected floor, optional Fix A, both blocks appended), `diag_stranded.mjs` (the deterministic replay). Reproduce with:
+
+```
+node nilo/build-inv.mjs jing-buy-stx-market-spread                 # as shipped
+npx rv . jing-buy-stx-market-spread invariant --runs=100 --seed=424242
+node nilo/build-inv.mjs jing-buy-stx-market-spread --con-arreglo   # with Fix A
+npx rv . jing-buy-stx-market-spread invariant --runs=100 --seed=424242
+```
+
+Scope note: run on the buy-side rung. The sell-side rung shares the block and I have not run it there.
 
 ---
 
