@@ -29,7 +29,9 @@ if (conFix) {
   t = t.replace(cst, cst + '\n(define-constant MINT_FLOOR u1000000000)\n(define-constant ERR_POOL_TAIL (err u7012))');
 }
 
-if (conInv) t += '\n' + readFileSync('nilo/envoltorio_cierre.clar', 'utf8')
-                  + '\n' + readFileSync('nilo/invariante_cierre.clar', 'utf8');
+// los dos peldanos no comparten unidades ni nombres: cada lado tiene su bloque
+const lado = name.includes('sell') ? '_sell' : '';
+if (conInv) t += '\n' + readFileSync(`nilo/envoltorio_cierre${lado}.clar`, 'utf8')
+                  + '\n' + readFileSync(`nilo/invariante_cierre${lado}.clar`, 'utf8');
 writeFileSync(OUT, t.replace(/\r\n/g, '\n'));
 console.log(`${OUT}: floor real, invariante=${conInv}, arreglo=${conFix}, ${t.length} bytes`);
